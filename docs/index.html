@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="bbccc is a browser-based ChArUco camera calibration tool that runs locally in your browser.">
+    <meta name="author" content="A7T">
+    <meta property="og:title" content="bbccc - Browser-Based ChArUco Camera Calibration">
+    <meta property="og:description" content="Generate printable ChArUco boards, capture samples, and calibrate cameras in the browser.">
+    <meta property="og:type" content="website">
+    <title>bbccc - ChArUco 纯前端真实相机标定工具</title>
+    <!-- 引入 jsPDF 用于生成精确物理尺寸的 PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #1e1e2e; --panel-bg: #282a36; --text-color: #f8f8f2;
+            --accent-color: #bd93f9; --success-color: #50fa7b; --error-color: #ff5555;
+            --warning-color: #f1fa8c; --border-color: #44475a; --table-header: #383a59;
+            --btn-bg: #44475a; --btn-hover: #6272a4;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color); color: var(--text-color);
+            margin: 0; padding: 10px; display: grid;
+            grid-template-columns: 420px 1fr; gap: 15px; height: 100vh;
+            box-sizing: border-box; overflow: hidden;
+        }
+        @media (max-width: 1200px) { body { grid-template-columns: 1fr; height: auto; overflow: auto; } }
+        .col { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding-right: 5px; }
+        .panel { background-color: var(--panel-bg); border-radius: 6px; padding: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        h2 { margin: 0 0 8px 0; font-size: 1.0rem; color: var(--accent-color); border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .control-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+        .control-row > div { display: flex; align-items: center; gap: 4px; }
+        label { font-size: 0.75rem; color: #ccc; white-space: nowrap; }
+        input[type="text"], input[type="number"], select {
+            background-color: #383a59; color: var(--text-color); border: 1px solid var(--border-color);
+            padding: 4px 6px; border-radius: 4px; font-family: inherit; font-size: 0.75rem;
+        }
+        input[type="text"] { flex-grow: 1; min-width: 50px; }
+        input[type="number"] { width: 50px; }
+        input[readonly] { background-color: #282a36; color: #888; border-color: #444; }
+        button {
+            cursor: pointer; background-color: var(--btn-bg); color: var(--text-color);
+            border: 1px solid var(--border-color); padding: 5px 10px; border-radius: 4px;
+            font-weight: bold; font-size: 0.75rem; transition: 0.2s;
+        }
+        button:hover:not(:disabled) { background-color: var(--btn-hover); color: #fff; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button.primary { background-color: var(--accent-color); color: #000; border-color: var(--accent-color); }
+        button.primary:hover:not(:disabled) { background-color: #d6b3ff; }
+        button.danger { background-color: #ff555544; color: #ff5555; border-color: #ff5555; }
+        button.danger:hover:not(:disabled) { background-color: #ff5555; color: #000; }
+        
+        .status-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 0.7rem; background-color: var(--border-color); }
+        .status-success { background-color: rgba(80, 250, 123, 0.2); color: var(--success-color); border: 1px solid var(--success-color); }
+        .status-error { background-color: rgba(255, 85, 85, 0.2); color: var(--error-color); border: 1px solid var(--error-color); }
+        .status-warning { background-color: rgba(241, 250, 140, 0.2); color: var(--warning-color); border: 1px solid var(--warning-color); }
+        
+        .video-container { position: relative; width: 100%; background-color: #000; border-radius: 6px; overflow: hidden; display: flex; justify-content: center; align-items: center; min-height: 240px; border: 1px solid var(--border-color); }
+        .video-container canvas { max-width: 100%; max-height: 500px; object-fit: contain; }
+        .overlay-metrics { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 8px; border-radius: 6px; font-size: 0.75rem; pointer-events: none; border: 1px solid var(--border-color); }
+        .metric-line { display: flex; justify-content: space-between; gap: 15px; margin-bottom: 2px; }
+        
+        .frames-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; max-height: 250px; overflow-y: auto; padding: 4px; }
+        .frame-card { background: var(--table-header); border: 1px solid var(--border-color); border-radius: 4px; padding: 4px; display: flex; flex-direction: column; gap: 4px; position: relative; }
+        .frame-card img { width: 100%; aspect-ratio: 4/3; object-fit: cover; border-radius: 2px; background: #000; }
+        .frame-card .info { font-size: 0.65rem; line-height: 1.2; }
+        .frame-card .del-btn { position: absolute; top: 2px; right: 2px; background: rgba(255,85,85,0.8); color: white; border: none; border-radius: 50%; width: 18px; height: 18px; font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        
+        pre { background-color: #1e1e2e; padding: 8px; border-radius: 4px; border: 1px solid var(--border-color); overflow-x: auto; font-size: 0.7rem; margin: 0; white-space: pre-wrap; word-wrap: break-word; flex-grow: 1; min-height: 120px; overflow-y: auto; }
+        .log-error { color: var(--error-color); } .log-success { color: var(--success-color); } .log-info { color: #8be9fd; } .log-warn { color: var(--warning-color); }
+        .calib-result-box { background-color: #1e1e2e; padding: 8px; border-radius: 4px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto;}
+        .app-footer { color: #888; font-size: 0.72rem; text-align: center; padding: 2px 0 6px; }
+        .app-footer a { color: #aaa; text-decoration: none; }
+        .app-footer a:hover { color: var(--text-color); text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+    <div class="col left-col">
+        <div class="panel">
+            <h2>一、基础控制与标定板初始化</h2>
+            <div class="control-row" style="margin-bottom: 12px;">
+                <input type="text" id="scriptUrl" value="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.12.0-release.1/dist/opencv.js">
+                <button id="btnLoad">加载 OpenCV</button>
+                <span id="loadStatus" class="status-badge">未加载</span>
+            </div>
+            
+            <div class="control-row">
+                <div><label>sqX:</label><input type="number" id="sqX" value="5" min="2"></div>
+                <div><label>sqY:</label><input type="number" id="sqY" value="7" min="2"></div>
+                <div><label>sqL(m):</label><input type="number" id="sqLen" value="0.035" step="0.005"></div>
+                <div><label>mkL(m):</label><input type="number" id="mkLen" value="0.02" step="0.005"></div>
+            </div>
+            <div class="control-row">
+                <label>Dict:</label>
+                <select id="dictSelect" style="flex-grow:1;">
+                    <option value="DICT_4X4_50">DICT_4X4_50</option>
+                    <option value="DICT_5X5_100">DICT_5X5_100</option>
+                    <option value="DICT_6X6_250" selected>DICT_6X6_250</option>
+                    <option value="DICT_7X7_1000">DICT_7X7_1000</option>
+                    <option value="DICT_APRILTAG_36h11">DICT_APRILTAG_36h11</option>
+                </select>
+                <button id="btnInitBoard" disabled class="primary">初始化标定板</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>二、板图打印与导出</h2>
+            <div class="control-row">
+                <div><label>方格物理(mm):</label><input type="number" id="sqLenMm" value="35" readonly></div>
+                <div><label>标记物理(mm):</label><input type="number" id="mkLenMm" value="20" readonly></div>
+                <div><label>导出DPI:</label><input type="number" id="exportDpi" value="300"></div>
+            </div>
+            <div class="control-row">
+                <div><label>纸张:</label>
+                    <select id="paperSize">
+                        <option value="A4">A4</option>
+                        <option value="A3">A3</option>
+                        <option value="Letter">Letter</option>
+                    </select>
+                </div>
+                <div><label>方向:</label>
+                    <select id="orientation">
+                        <option value="portrait">纵向(Portrait)</option>
+                        <option value="landscape">横向(Landscape)</option>
+                    </select>
+                </div>
+                <div><label>边距(mm):</label><input type="number" id="marginMm" value="10"></div>
+            </div>
+            <div class="control-row">
+                <label><input type="checkbox" id="chkRuler" checked> 附带标尺</label>
+                <div><label>尺长(mm):</label><input type="number" id="rulerLenMm" value="50"></div>
+                <label style="margin-left: 10px;"><input type="checkbox" id="chkMeta" checked> 附带警告文本</label>
+            </div>
+            <div style="font-size: 0.7rem; color: #8be9fd; background: rgba(0,0,0,0.2); padding: 6px; border-radius: 4px; margin-bottom: 8px;">
+                <div id="printSummary">参数未计算...</div>
+            </div>
+            <div class="control-row">
+                <button id="btnExportPNG" disabled class="primary">导出高分 PNG</button>
+                <button id="btnExportPDF" disabled class="primary" style="background-color:#ffb86c; color:#000;">导出 1:1 打印 PDF</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>三、摄像头与实时采集</h2>
+            <div class="control-row">
+                <label>设备:</label>
+                <select id="cameraSelect" style="flex-grow:1; max-width: 150px;"></select>
+                <button id="btnRefreshCams">刷新设备</button>
+            </div>
+            <div class="control-row">
+                <div><label>朝向:</label>
+                    <select id="facingMode">
+                        <option value="environment">后置/主摄</option>
+                        <option value="user">前置/自拍</option>
+                        <option value="">不指定</option>
+                    </select>
+                </div>
+                <div><label>期望分辨率:</label><input type="number" id="prefW" value="1280"> x <input type="number" id="prefH" value="720"></div>
+            </div>
+            <div class="control-row" style="margin-top: 8px;">
+                <button id="btnStartCam" disabled class="primary" style="background-color: #50fa7b;">启动摄像头</button>
+                <button id="btnStopCam" disabled class="danger">停止</button>
+                <span id="camStatus" class="status-badge">已关闭</span>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>四、采样参数与采集控制</h2>
+            <div class="control-row">
+                <div><label>要求角点数&ge;</label><input type="number" id="minCharuco" value="15"></div>
+                <div><label>强检阈值:</label><input type="number" id="thresh" value="12"></div>
+                <div><label>要求Marker&ge;</label><input type="number" id="minMarker" value="10"></div>
+            </div>
+            <div class="control-row">
+                <div><label>最小板面积比&ge;</label><input type="number" id="minArea" value="0.08" step="0.01"></div>
+                <div><label>最小差异分&ge;</label><input type="number" id="minDiv" value="0.05" step="0.01"></div>
+            </div>
+            <div class="control-row">
+                <div><label>自动间隔(ms):</label><input type="number" id="minInterval" value="800" step="100"></div>
+                <div><label>最大存储帧数:</label><input type="number" id="maxFrames" value="40"></div>
+            </div>
+            <div class="control-row">
+                <label><input type="checkbox" id="chkAuto" disabled> <b>开启自动采集 (Auto Capture)</b></label>
+                <label style="margin-left:10px;"><input type="checkbox" id="chkDiv" checked> 视角多样性去重</label>
+            </div>
+            <div class="control-row" style="margin-top: 8px;">
+                <button id="btnManualCap" disabled class="primary">手动采集当前帧</button>
+                <button id="btnResetCap" disabled>清空样本</button>
+            </div>
+        </div>
+
+        <div class="panel" style="flex-grow: 1; display: flex; flex-direction: column;">
+            <h2>五、日志 <button id="btnClearLog" style="float:right; padding:2px 5px;">清空</button></h2>
+            <pre id="logArea"></pre>
+        </div>
+        <div class="app-footer">
+            <span>bbccc by A7T</span>
+            <span>·</span>
+            <a href="https://github.com/A7T/bbccc" target="_blank" rel="noopener">Source</a>
+        </div>
+    </div>
+
+    <div class="col right-col">
+        <div class="panel">
+            <h2>六、实时画面与检测</h2>
+            <div class="video-container">
+                <video id="rawVideo" autoplay playsinline muted style="display:none;"></video>
+                <canvas id="displayCanvas"></canvas>
+                
+                <div class="overlay-metrics">
+                    <div class="metric-line"><span>分辨率:</span> <b id="mRes">-</b></div>
+                    <div class="metric-line"><span>fps:</span> <b id="mFps">-</b></div>
+                    <div class="metric-line"><span>Markers:</span> <b id="mMk">0</b></div>
+                    <div class="metric-line"><span>Charuco IDs:</span> <b id="mCh">0</b></div>
+                    <div class="metric-line"><span>面积占比:</span> <b id="mArea">0.00</b></div>
+                    <div class="metric-line"><span>差异分:</span> <b id="mDiv">0.00</b></div>
+                    <div class="metric-line"><span>采集达标:</span> <b id="mPass" style="color:var(--error-color)">否</b></div>
+                    <div class="metric-line" style="margin-top:5px; border-top:1px solid #666; padding-top:5px;">
+                        <span>已采集:</span> <b id="mCapCount" style="color:var(--accent-color); font-size:1.1em;">0</b>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>七、已采集样本 (<span id="uiSampleCount">0</span>)</h2>
+            <div class="frames-grid" id="framesGrid"></div>
+        </div>
+
+        <div class="panel">
+            <h2>八、标定与导出</h2>
+            <div class="control-row" style="margin-bottom: 8px;">
+                <button id="btnCalibrate" disabled class="primary" style="background-color:#ffb86c; font-size:0.85rem; padding: 6px 12px;">执行标定计算</button>
+                <button id="btnDownloadJSON" disabled>下载结果与数据集 (JSON)</button>
+                <button id="btnCopyJSON">复制实验摘要</button>
+                <span id="calibStatus" class="status-badge" style="margin-left:auto;">未执行</span>
+            </div>
+            <div class="calib-result-box" id="calibDataBox">等待采集足够样本并执行标定...</div>
+        </div>
+    </div>
+
+<script>
+    // --- 核心状态 ---
+    let summary = {
+        timestamp: null, module: { url: null, loadMs: 0 },
+        boardConfig: {}, printConfig: {}, cameraConfig: {}, samplingConfig: {},
+        capturedFrames: [],
+        calibration: {
+            usableFrameCount: 0, calibrationAttempted: false, calibrationSuccess: false,
+            rms: null, cameraMatrix: null, distCoeffs: null, stdDeviationsIntrinsics: null, perViewErrors: null,
+            imageSize: null, elapsedMs: 0, attempts: [], errors: []
+        }
+    };
+
+    let cvInstance = null; let globalBoard = null; let globalDetector = null; let globalDict = null;
+    let videoStream = null; let detectLoopId = null; let isDetecting = false;
+    let lastCaptureTime = 0; let lastDrawTime = 0; let frameCountStats = 0; let currentFps = 0;
+    window.printFits = false; // 用于判定 PDF 导出是否安全
+
+    const processCanvas = document.createElement('canvas'); 
+    const processCtx = processCanvas.getContext('2d', { willReadFrequently: true });
+    
+    // UI 引用
+    const UI = {
+        scriptUrl: document.getElementById('scriptUrl'), btnLoad: document.getElementById('btnLoad'), loadStatus: document.getElementById('loadStatus'),
+        sqX: document.getElementById('sqX'), sqY: document.getElementById('sqY'), 
+        sqLen: document.getElementById('sqLen'), mkLen: document.getElementById('mkLen'), dictSelect: document.getElementById('dictSelect'),
+        sqLenMm: document.getElementById('sqLenMm'), mkLenMm: document.getElementById('mkLenMm'),
+        paperSize: document.getElementById('paperSize'), orientation: document.getElementById('orientation'), marginMm: document.getElementById('marginMm'),
+        exportDpi: document.getElementById('exportDpi'), chkRuler: document.getElementById('chkRuler'), rulerLenMm: document.getElementById('rulerLenMm'), chkMeta: document.getElementById('chkMeta'),
+        printSummary: document.getElementById('printSummary'), btnExportPNG: document.getElementById('btnExportPNG'), btnExportPDF: document.getElementById('btnExportPDF'),
+        btnInitBoard: document.getElementById('btnInitBoard'), 
+        cameraSelect: document.getElementById('cameraSelect'), btnRefreshCams: document.getElementById('btnRefreshCams'),
+        btnStartCam: document.getElementById('btnStartCam'), btnStopCam: document.getElementById('btnStopCam'), camStatus: document.getElementById('camStatus'),
+        chkAuto: document.getElementById('chkAuto'), chkDiv: document.getElementById('chkDiv'),
+        btnManualCap: document.getElementById('btnManualCap'), btnResetCap: document.getElementById('btnResetCap'),
+        logArea: document.getElementById('logArea'), btnClearLog: document.getElementById('btnClearLog'),
+        rawVideo: document.getElementById('rawVideo'), displayCanvas: document.getElementById('displayCanvas'),
+        mRes: document.getElementById('mRes'), mFps: document.getElementById('mFps'), mMk: document.getElementById('mMk'), mCh: document.getElementById('mCh'),
+        mArea: document.getElementById('mArea'), mDiv: document.getElementById('mDiv'), mPass: document.getElementById('mPass'), mCapCount: document.getElementById('mCapCount'),
+        framesGrid: document.getElementById('framesGrid'), uiSampleCount: document.getElementById('uiSampleCount'),
+        btnCalibrate: document.getElementById('btnCalibrate'), btnDownloadJSON: document.getElementById('btnDownloadJSON'),
+        btnCopyJSON: document.getElementById('btnCopyJSON'), calibStatus: document.getElementById('calibStatus'), calibDataBox: document.getElementById('calibDataBox')
+    };
+
+    // --- 工具函数 ---
+    function log(msg, type = 'log-info') {
+        const span = document.createElement('span'); span.className = type; 
+        span.textContent = `[${new Date().toLocaleTimeString().split(' ')[0]}] ${msg}\n`;
+        UI.logArea.appendChild(span); UI.logArea.scrollTop = UI.logArea.scrollHeight;
+        console.log(`[CalibTool] ${msg}`);
+    }
+    window.addEventListener('error', e => log(`Global Error: ${e.message}`, 'log-error'));
+    window.addEventListener('unhandledrejection', e => log(`Unhandled Promise: ${e.reason}`, 'log-error'));
+    function setStatus(el, text, type) { el.textContent = text; el.className = `status-badge ${type}`; }
+    function safeDelete(obj) { if (obj && typeof obj.delete === 'function') { try { obj.delete(); } catch(e){} } }
+    
+    function matToArray2D(mat) {
+        if (!mat) return null; let arr = [];
+        let isFloat64 = mat.type() === cvInstance.CV_64F || mat.type() === cvInstance.CV_64FC1;
+        let isFloat32 = mat.type() === cvInstance.CV_32F || mat.type() === cvInstance.CV_32FC1;
+        let data = isFloat64 ? mat.data64F : (isFloat32 ? mat.data32F : mat.data);
+        for (let r = 0; r < mat.rows; r++) {
+            let row = []; for (let c = 0; c < mat.cols; c++) row.push(data[r * mat.cols + c]);
+            arr.push(row);
+        }
+        return arr;
+    }
+
+    function getSamplingConfig() {
+        return {
+            minCh: parseInt(document.getElementById('minCharuco').value, 10), thresh: parseInt(document.getElementById('thresh').value, 10),
+            minMk: parseInt(document.getElementById('minMarker').value, 10), minArea: parseFloat(document.getElementById('minArea').value),
+            minDiv: parseFloat(document.getElementById('minDiv').value), minInterval: parseInt(document.getElementById('minInterval').value, 10),
+            maxFrames: parseInt(document.getElementById('maxFrames').value, 10), requireDiv: UI.chkDiv.checked
+        };
+    }
+
+    // --- 1. OpenCV 加载 ---
+    let globalLoadTimeoutId = null;
+    UI.btnLoad.addEventListener('click', () => {
+        if (globalLoadTimeoutId) clearTimeout(globalLoadTimeoutId);
+        const oldScript = document.getElementById('opencv-script'); if (oldScript) oldScript.remove();
+        try { delete window.cv; delete window.Module; } catch(e){}
+        cvInstance = null; UI.btnInitBoard.disabled = true; UI.btnStartCam.disabled = true;
+        
+        const url = UI.scriptUrl.value.trim(); summary.module.url = url;
+        setStatus(UI.loadStatus, '正在加载...', 'status-loading'); log(`注入脚本: ${url}`);
+        UI.btnLoad.disabled = true; const startTime = performance.now(); let isFinalized = false;
+
+        window.Module = { onRuntimeInitialized: () => { if (!isFinalized) { isFinalized = true; finalizeLoad(window.cv || window.Module, startTime); } } };
+
+        setTimeout(() => {
+            const script = document.createElement('script'); script.id = 'opencv-script'; script.src = url; script.async = true;
+            globalLoadTimeoutId = setTimeout(() => { if (!isFinalized) { setStatus(UI.loadStatus, '加载超时', 'status-error'); log('加载超时(20s)', 'log-error'); UI.btnLoad.disabled = false; } }, 20000);
+            script.onload = () => {
+                if (typeof window.cv === 'function') { try { let p = window.cv(window.Module); if (p && p.then) p.then(inst => { if(!isFinalized){ isFinalized=true; finalizeLoad(inst, startTime); } }); } catch(e) { log(`工厂异常: ${e.message}`, 'log-error'); } }
+                else if (window.cv && window.cv.then) { try { window.cv.then(inst => { if(!isFinalized){ isFinalized=true; finalizeLoad(inst, startTime); } }); } catch(e) { log(`Thenable异常: ${e.message}`, 'log-error'); } }
+                else if (window.cv && window.cv.Mat) { if(!isFinalized){ isFinalized=true; finalizeLoad(window.cv, startTime); } }
+            };
+            script.onerror = () => { if(!isFinalized) { setStatus(UI.loadStatus, '加载失败', 'status-error'); log('脚本加载失败', 'log-error'); UI.btnLoad.disabled = false; } };
+            document.body.appendChild(script);
+        }, 50);
+    });
+
+    function finalizeLoad(cv, startTime) {
+        if (globalLoadTimeoutId) clearTimeout(globalLoadTimeoutId);
+        if (cv && typeof cv.then === 'function') { try { delete cv.then; } catch(e){} }
+        window.cv = cv; cvInstance = cv;
+        summary.module.loadMs = Math.round(performance.now() - startTime);
+        setStatus(UI.loadStatus, '已加载', 'status-success'); log(`OpenCV 就绪, 耗时 ${summary.module.loadMs}ms`, 'log-success');
+        UI.btnLoad.disabled = false; UI.btnInitBoard.disabled = false;
+        refreshDeviceList(); updatePrintInfo();
+    }
+
+    // --- 联动逻辑与打印摘要计算 ---
+    function syncBoardInputs(source) {
+        if (source === 'm') {
+            UI.sqLenMm.value = (parseFloat(UI.sqLen.value) * 1000).toFixed(2);
+        } else {
+            UI.sqLen.value = (parseFloat(UI.sqLenMm.value) / 1000).toFixed(5);
+        }
+        // 自动按比例更新 mkLenMm
+        let ratio = parseFloat(UI.mkLen.value) / parseFloat(UI.sqLen.value);
+        UI.mkLenMm.value = (parseFloat(UI.sqLenMm.value) * ratio).toFixed(2);
+        updatePrintInfo();
+    }
+    
+    UI.sqLen.addEventListener('input', () => syncBoardInputs('m'));
+    UI.mkLen.addEventListener('input', () => syncBoardInputs('m'));
+    
+    const triggerUpdateInputs = [UI.sqX, UI.sqY, UI.paperSize, UI.orientation, UI.marginMm];
+    triggerUpdateInputs.forEach(el => el.addEventListener('change', updatePrintInfo));
+
+    function updatePrintInfo() {
+        let sqX = parseInt(UI.sqX.value, 10);
+        let sqY = parseInt(UI.sqY.value, 10);
+        let sqLenMm = parseFloat(UI.sqLenMm.value);
+        let paper = UI.paperSize.value;
+        let orient = UI.orientation.value;
+        let margin = parseFloat(UI.marginMm.value);
+
+        let paperW = 0, paperH = 0;
+        if (paper === 'A4') { paperW = 210; paperH = 297; }
+        else if (paper === 'A3') { paperW = 297; paperH = 420; }
+        else if (paper === 'Letter') { paperW = 215.9; paperH = 279.4; }
+
+        if (orient === 'landscape') { let tmp = paperW; paperW = paperH; paperH = tmp; }
+
+        let boardW = sqX * sqLenMm; let boardH = sqY * sqLenMm;
+        let availW = paperW - margin * 2; let availH = paperH - margin * 2;
+        let fits = boardW <= availW && boardH <= availH;
+        
+        let summaryHTML = `板图物理: <b>${boardW.toFixed(1)} x ${boardH.toFixed(1)} mm</b><br>`;
+        summaryHTML += `纸张尺寸: <b>${paperW.toFixed(1)} x ${paperH.toFixed(1)} mm</b> (安全区 ${availW.toFixed(1)} x ${availH.toFixed(1)})<br>`;
+        summaryHTML += `排版状态: `;
+        if (fits) {
+            summaryHTML += `<span style="color:var(--success-color); font-weight:bold;">✔ 尺寸合适，放得下</span>`;
+            window.printFits = true;
+        } else {
+            summaryHTML += `<span style="color:var(--error-color); font-weight:bold;">✘ 板图过大，超出版芯安全区，禁止导出PDF</span>`;
+            window.printFits = false;
+        }
+        UI.printSummary.innerHTML = summaryHTML;
+        
+        UI.btnExportPNG.disabled = !globalBoard;
+        UI.btnExportPDF.disabled = !(globalBoard && window.printFits);
+    }
+
+    // --- 2. 初始化标定板 ---
+    UI.btnInitBoard.addEventListener('click', () => {
+        if (!cvInstance) return; const cv = cvInstance;
+        log('--- 初始化 ChArUco 环境 ---', 'log-info');
+        safeDelete(globalBoard); safeDelete(globalDetector); safeDelete(globalDict);
+        globalBoard = globalDetector = globalDict = null; 
+
+        summary.boardConfig = {
+            sqX: parseInt(UI.sqX.value, 10), sqY: parseInt(UI.sqY.value, 10),
+            sqL: parseFloat(UI.sqLen.value), mkL: parseFloat(UI.mkLen.value), dictName: UI.dictSelect.value
+        };
+
+        try {
+            let dictFn = cv.getPredefinedDictionary || (cv.aruco && cv.aruco.getPredefinedDictionary);
+            let dictId = cv[summary.boardConfig.dictName] ?? (cv.aruco && cv.aruco[summary.boardConfig.dictName]);
+            globalDict = dictFn(dictId);
+            
+            const boardSize = new cv.Size(summary.boardConfig.sqX, summary.boardConfig.sqY); const emptyIds = new cv.Mat();
+            const boardCtors = [
+                () => new cv.aruco_CharucoBoard(boardSize, summary.boardConfig.sqL, summary.boardConfig.mkL, globalDict, emptyIds),
+                () => new cv.CharucoBoard(boardSize, summary.boardConfig.sqL, summary.boardConfig.mkL, globalDict, emptyIds),
+                () => new cv.aruco.CharucoBoard(boardSize, summary.boardConfig.sqL, summary.boardConfig.mkL, globalDict, emptyIds)
+            ];
+            for (let fn of boardCtors) { try { globalBoard = fn(); break; } catch(e) {} }
+            safeDelete(emptyIds);
+            if (!globalBoard) throw new Error('所有 Board 构造尝试失败');
+
+            const instantiate = (names, args) => { for(let n of names) { let Cls = cv[n] || (cv.aruco && cv.aruco[n.replace('aruco_','')]); if (Cls) { try { return new Cls(...args); } catch(e){} } } return null; };
+            let cp = instantiate(['aruco_CharucoParameters', 'CharucoParameters'], []);
+            let dp = instantiate(['aruco_DetectorParameters', 'DetectorParameters'], []);
+            let rp = instantiate(['aruco_RefineParameters', 'RefineParameters'], [10.0, 3.0, true]) || instantiate(['aruco_RefineParameters', 'RefineParameters'], []);
+
+            const detCtors = [
+                () => new (cv.aruco_CharucoDetector || cv.CharucoDetector)(globalBoard, cp, dp, rp),
+                () => new (cv.aruco_CharucoDetector || cv.CharucoDetector)(globalBoard)
+            ];
+            for (let fn of detCtors) { try { globalDetector = fn(); break; } catch(e) {} }
+            safeDelete(cp); safeDelete(dp); safeDelete(rp);
+            if (!globalDetector) throw new Error('Detector 构造尝试失败');
+
+            UI.btnStartCam.disabled = false;
+            updatePrintInfo(); // 同步激活导出按钮
+            log('ChArUco 标定板与检测器就绪', 'log-success');
+        } catch(e) { log(`板初始化错误: ${e.message}`, 'log-error'); }
+    });
+
+    // --- 高清底图零边缘生成工具 ---
+    function generateHighResBoard() {
+        const cv = cvInstance;
+        let sqX = parseInt(UI.sqX.value, 10); let sqY = parseInt(UI.sqY.value, 10);
+        let sqLenMm = parseFloat(UI.sqLenMm.value);
+        let dpi = parseInt(UI.exportDpi.value, 10) || 300;
+        let pxPerMm = dpi / 25.4;
+        let sqSizePx = Math.floor(sqLenMm * pxPerMm);
+        let texW = sqSizePx * sqX; let texH = sqSizePx * sqY;
+        
+        let boardMat = new cv.Mat(); const outSize = new cv.Size(texW, texH);
+        if (globalBoard.generateImage) { try{ globalBoard.generateImage(outSize, boardMat, 0, 1); }catch(e){ globalBoard.generateImage(outSize, boardMat); } } 
+        else { try{ globalBoard.draw(outSize, boardMat, 0, 1); }catch(e){ globalBoard.draw(outSize, boardMat); } }
+        return boardMat;
+    }
+
+    // --- PNG 与 PDF 导出 ---
+    UI.btnExportPNG.addEventListener('click', () => {
+        if (!globalBoard || !cvInstance) return;
+        try {
+            let boardMat = generateHighResBoard();
+            let tmpCvs = document.createElement('canvas'); cv.imshow(tmpCvs, boardMat); boardMat.delete();
+            let link = document.createElement('a');
+            link.download = `charuco-board-${UI.sqX.value}x${UI.sqY.value}-${UI.sqLenMm.value}mm-${UI.dictSelect.value}.png`;
+            link.href = tmpCvs.toDataURL('image/png'); link.click();
+            log('高分板图 PNG 已下载', 'log-success');
+        } catch(e) { log(`导出 PNG 失败: ${e.message}`, 'log-error'); }
+    });
+
+    UI.btnExportPDF.addEventListener('click', () => {
+        if (!globalBoard || !cvInstance) return;
+        if (!window.jspdf || !window.jspdf.jsPDF) { log('jsPDF 库未加载完成或被屏蔽，请检查网络', 'log-error'); return; }
+        if (!window.printFits) { log('板图超出纸张尺寸，无法执行精准导出', 'log-error'); return; }
+        
+        try {
+            let boardMat = generateHighResBoard();
+            let tmpCvs = document.createElement('canvas'); cv.imshow(tmpCvs, boardMat); boardMat.delete();
+            let imgData = tmpCvs.toDataURL('image/png');
+            
+            let sqX = parseInt(UI.sqX.value, 10); let sqY = parseInt(UI.sqY.value, 10);
+            let sqLenMm = parseFloat(UI.sqLenMm.value); let mkLenMm = parseFloat(UI.mkLenMm.value);
+            let paper = UI.paperSize.value; let orient = UI.orientation.value; let margin = parseFloat(UI.marginMm.value);
+            
+            let boardW = sqX * sqLenMm; let boardH = sqY * sqLenMm;
+            const doc = new window.jspdf.jsPDF({ orientation: orient, unit: 'mm', format: paper.toLowerCase() });
+            
+            let paperW = doc.internal.pageSize.getWidth(); let paperH = doc.internal.pageSize.getHeight();
+            let startX = (paperW - boardW) / 2; let startY = (paperH - boardH) / 2;
+            
+            // 绘制板图
+            doc.addImage(imgData, 'PNG', startX, startY, boardW, boardH);
+            
+            // 绘制标尺
+            if (UI.chkRuler.checked) {
+                let rulerLen = parseFloat(UI.rulerLenMm.value);
+                let ry = startY + boardH + (margin / 2); if (ry > paperH - 5) ry = paperH - 5;
+                doc.setLineWidth(0.3); doc.setDrawColor(0);
+                doc.line(startX, ry, startX + rulerLen, ry);
+                doc.line(startX, ry - 1.5, startX, ry + 1.5);
+                doc.line(startX + rulerLen, ry - 1.5, startX + rulerLen, ry + 1.5);
+                doc.setFontSize(10); doc.text(`${rulerLen} mm`, startX + rulerLen / 2, ry - 2, { align: 'center' });
+            }
+            
+            // 绘制元数据和防呆警告
+            if (UI.chkMeta.checked) {
+                let ty = paperH - Math.max(margin / 2, 5);
+                doc.setFontSize(9);
+                doc.text(`ChArUco ${sqX}x${sqY} | Sq: ${sqLenMm}mm | Mk: ${mkLenMm}mm | ${UI.dictSelect.value}`, paperW / 2, ty - 4, { align: 'center' });
+                doc.setFontSize(10); doc.setTextColor(200, 0, 0); // Warning Red
+                doc.text(`*** Print at 100% / Actual Size / Disable Fit to Page ***`, paperW / 2, ty, { align: 'center' });
+            }
+            
+            doc.save(`charuco-board-${sqX}x${sqY}-${sqLenMm}mm.pdf`);
+            log('物理 1:1 板图 PDF 已下载，请遵照页面红字提示打印', 'log-success');
+        } catch(e) { log(`导出 PDF 失败: ${e.message}`, 'log-error'); }
+    });
+
+    // --- 3. 摄像头接入 ---
+    async function refreshDeviceList() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+            log('当前环境不支持 enumerateDevices (可能非 HTTPS 或 localhost)', 'log-warn'); return;
+        }
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(d => d.kind === 'videoinput');
+            UI.cameraSelect.innerHTML = '<option value="">系统默认</option>';
+            videoDevices.forEach((d, i) => {
+                let opt = document.createElement('option'); opt.value = d.deviceId; opt.text = d.label || `Camera ${i+1}`;
+                UI.cameraSelect.appendChild(opt);
+            });
+            log(`枚举到 ${videoDevices.length} 个视频设备`);
+        } catch(e) { log(`枚举设备失败: ${e.message}`, 'log-warn'); }
+    }
+    UI.btnRefreshCams.addEventListener('click', refreshDeviceList);
+
+    UI.btnStartCam.addEventListener('click', async () => {
+        log('--- 正在请求摄像头权限... ---', 'log-info');
+        UI.btnStartCam.disabled = true;
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            log('致命错误: getUserMedia 未定义。请确保在 HTTPS 运行。', 'log-error');
+            UI.btnStartCam.disabled = false; return;
+        }
+
+        const devId = UI.cameraSelect.value; const facing = document.getElementById('facingMode').value;
+        const w = parseInt(document.getElementById('prefW').value, 10); const h = parseInt(document.getElementById('prefH').value, 10);
+        
+        let videoConstraints = { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30 } };
+        if (devId) videoConstraints.deviceId = { exact: devId };
+        else if (facing) videoConstraints.facingMode = { ideal: facing };
+
+        try {
+            videoStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+            UI.rawVideo.srcObject = videoStream;
+            await new Promise((resolve) => { UI.rawVideo.onloadedmetadata = () => { UI.rawVideo.play(); resolve(); }; });
+            
+            const track = videoStream.getVideoTracks()[0]; const settings = track.getSettings();
+            summary.cameraConfig = { width: settings.width, height: settings.height, frameRate: settings.frameRate, deviceId: settings.deviceId, facingMode: settings.facingMode };
+            
+            processCanvas.width = settings.width; processCanvas.height = settings.height;
+            UI.displayCanvas.width = settings.width; UI.displayCanvas.height = settings.height;
+            UI.mRes.textContent = `${settings.width}x${settings.height}`;
+            
+            setStatus(UI.camStatus, '运行中', 'status-success'); log(`摄像头启动成功: ${settings.width}x${settings.height}`, 'log-success');
+            
+            UI.btnStopCam.disabled = false; UI.chkAuto.disabled = false; UI.btnManualCap.disabled = false; UI.btnResetCap.disabled = false;
+            
+            isDetecting = true; lastDrawTime = performance.now(); frameCountStats = 0;
+            detectLoop(); // 启动检测循环
+        } catch(e) {
+            log(`启动摄像头失败: ${e.name} - ${e.message}`, 'log-error'); UI.btnStartCam.disabled = false;
+        }
+    });
+
+    UI.btnStopCam.addEventListener('click', () => {
+        isDetecting = false;
+        if (detectLoopId) cancelAnimationFrame(detectLoopId);
+        if (videoStream) { videoStream.getTracks().forEach(track => track.stop()); videoStream = null; }
+        UI.rawVideo.srcObject = null; setStatus(UI.camStatus, '已关闭', 'status-badge'); log('摄像头已停止');
+        UI.btnStartCam.disabled = false; UI.btnStopCam.disabled = true; UI.chkAuto.disabled = true; UI.btnManualCap.disabled = true;
+    });
+
+    // --- 4 & 5. 实时检测循环与质量指标 ---
+    function getPoseFeature(chC) {
+        if (!chC || chC.rows === 0) return null;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (let i=0; i<chC.rows; i++) {
+            let x = chC.data32F[i*2], y = chC.data32F[i*2+1];
+            if(x<minX) minX=x; if(x>maxX) maxX=x; if(y<minY) minY=y; if(y>maxY) maxY=y;
+        }
+        let w = processCanvas.width, h = processCanvas.height;
+        let cx = (minX + maxX)/2 / w, cy = (minY + maxY)/2 / h;
+        let diag = Math.sqrt(Math.pow(maxX-minX,2) + Math.pow(maxY-minY,2)) / Math.sqrt(w*w + h*h);
+        return { cx, cy, diag, areaRatio: ((maxX-minX)*(maxY-minY)) / (w*h) };
+    }
+
+    function calculateDiversity(feature) {
+        if (!feature) return 0;
+        if (summary.capturedFrames.length === 0) return 1.0; 
+        let minDist = Infinity;
+        for (let f of summary.capturedFrames) {
+            if (!f.feature) continue;
+            let d = Math.sqrt(Math.pow(feature.cx - f.feature.cx, 2) + Math.pow(feature.cy - f.feature.cy, 2) + Math.pow(feature.diag - f.feature.diag, 2));
+            if (d < minDist) minDist = d;
+        }
+        return minDist;
+    }
+
+    let currentFrameData = null;
+
+    function detectLoop() {
+        if (!isDetecting || !cvInstance) return;
+        const cv = cvInstance; const cfg = getSamplingConfig();
+        const now = performance.now();
+        
+        frameCountStats++;
+        if (now - lastDrawTime >= 1000) { UI.mFps.textContent = Math.round(frameCountStats * 1000 / (now - lastDrawTime)); frameCountStats = 0; lastDrawTime = now; }
+
+        let frameMat = null, outImg = null, chC = null, chI = null, mkC = null, mkI = null;
+        
+        try {
+            processCtx.drawImage(UI.rawVideo, 0, 0, processCanvas.width, processCanvas.height);
+            frameMat = cv.imread(processCanvas);
+            let grayMat = new cv.Mat(); cv.cvtColor(frameMat, grayMat, cv.COLOR_RGBA2GRAY);
+
+            chC = new cv.Mat(); chI = new cv.Mat(); mkC = new cv.MatVector(); mkI = new cv.Mat();
+            if (globalDetector.detectBoard) {
+                try { globalDetector.detectBoard(grayMat, chC, chI, mkC, mkI); } catch(e){}
+            } else {
+                let dp = new cv.aruco_DetectorParameters(); cv.aruco.detectMarkers(grayMat, globalDict, mkC, mkI, dp);
+                if (mkI.rows > 0) cv.aruco.interpolateCornersCharuco(mkC, mkI, grayMat, globalBoard, chC, chI);
+                safeDelete(dp);
+            }
+            grayMat.delete();
+
+            let mCount = mkC.size(); let chRows = chI.rows;
+            let feature = chRows > 0 ? getPoseFeature(chC) : null;
+            let areaRatio = feature ? feature.areaRatio : 0;
+            let divScore = feature ? calculateDiversity(feature) : 0;
+
+            UI.mMk.textContent = mCount; UI.mCh.textContent = chRows;
+            UI.mArea.textContent = areaRatio.toFixed(3); UI.mDiv.textContent = divScore.toFixed(3);
+
+            let rejectReason = null;
+            if (chRows < cfg.minCh) rejectReason = `角点不足 (${chRows}<${cfg.minCh})`;
+            else if (mCount < cfg.minMk) rejectReason = `Marker不足 (${mCount}<${cfg.minMk})`;
+            else if (chRows < cfg.thresh) rejectReason = `未达强检 (${chRows}<${cfg.thresh})`;
+            else if (areaRatio < cfg.minArea) rejectReason = `太远 (${areaRatio.toFixed(2)}<${cfg.minArea})`;
+            else if (cfg.requireDiv && divScore < cfg.minDiv) rejectReason = `重复 (距${divScore.toFixed(2)}<${cfg.minDiv})`;
+            else if (now - lastCaptureTime < cfg.minInterval) rejectReason = `冷却中`;
+            else if (summary.capturedFrames.length >= cfg.maxFrames) rejectReason = `已满 (${cfg.maxFrames})`;
+
+            let passesThresholds = (rejectReason === null);
+            UI.mPass.textContent = passesThresholds ? "是" : "否";
+            UI.mPass.style.color = passesThresholds ? 'var(--success-color)' : 'var(--error-color)';
+
+            outImg = frameMat.clone();
+            let dMk = cv.drawDetectedMarkers || (cv.aruco && cv.aruco.drawDetectedMarkers);
+            if (dMk && mCount > 0) try { dMk(outImg, mkC, mkI); } catch(e){}
+            let dCh = cv.drawDetectedCornersCharuco || (cv.aruco && cv.aruco.drawDetectedCornersCharuco);
+            if (dCh && chRows > 0) try { dCh(outImg, chC, chI, new cv.Scalar(0,255,0,255)); } catch(e){}
+            cv.imshow(UI.displayCanvas, outImg);
+
+            safeDelete(currentFrameData?.chC); safeDelete(currentFrameData?.chI); safeDelete(currentFrameData?.thumbMat);
+            currentFrameData = {
+                timestamp: now, mCount, chRows, areaRatio, divScore, feature, passesThresholds, rejectReason,
+                chC: chRows > 0 ? chC.clone() : null, chI: chRows > 0 ? chI.clone() : null,
+                thumbMat: outImg.clone() 
+            };
+
+            if (UI.chkAuto.checked && passesThresholds) { executeCapture(currentFrameData, true); }
+
+        } catch (e) {
+            console.error("Detect Loop Error:", e);
+        } finally {
+            safeDelete(frameMat); safeDelete(outImg); safeDelete(chC); safeDelete(chI); safeDelete(mkC); safeDelete(mkI);
+            detectLoopId = requestAnimationFrame(detectLoop);
+        }
+    }
+
+    // --- 7 & 8. 采集核心逻辑与手动 3D 点映射 ---
+    function executeCapture(data, isAuto) {
+        if (!data || data.chRows === 0 || !data.chC || !data.chI) {
+            if (!isAuto) log(`手动采集失败: 画面中未检测到足够的角点`, 'log-warn'); return;
+        }
+        if (!isAuto && data.rejectReason && !data.rejectReason.includes("冷却中")) {
+            log(`手动采集警告: ${data.rejectReason}，但强制录入。`, 'log-warn');
+        }
+
+        const cv = cvInstance;
+        let objPts = null; let imgPts = null; let manual3DMappingSuccess = false;
+
+        try {
+            objPts = new cv.Mat(data.chRows, 1, cv.CV_32FC3);
+            imgPts = new cv.Mat(data.chRows, 1, cv.CV_32FC2);
+            let sqX = summary.boardConfig.sqX; let sqL = summary.boardConfig.sqL;
+            
+            for (let j = 0; j < data.chRows; j++) {
+                let id = data.chI.data32S[j];
+                let ptX = (id % (sqX - 1) + 1) * sqL;
+                let ptY = (Math.floor(id / (sqX - 1)) + 1) * sqL;
+                
+                objPts.data32F[j * 3 + 0] = ptX; objPts.data32F[j * 3 + 1] = ptY; objPts.data32F[j * 3 + 2] = 0;
+                imgPts.data32F[j * 2 + 0] = data.chC.data32F[j * 2]; imgPts.data32F[j * 2 + 1] = data.chC.data32F[j * 2 + 1];
+            }
+            manual3DMappingSuccess = true;
+
+            let tmpCvs = document.createElement('canvas');
+            let scale = 160 / data.thumbMat.cols;
+            let dsize = new cv.Size(160, Math.round(data.thumbMat.rows * scale));
+            let resized = new cv.Mat(); cv.resize(data.thumbMat, resized, dsize, 0, 0, cv.INTER_AREA);
+            cv.imshow(tmpCvs, resized); resized.delete();
+            let thumbDataUrl = tmpCvs.toDataURL('image/jpeg', 0.6);
+
+            let frameRecord = {
+                frameIndex: summary.capturedFrames.length, timestamp: new Date().toISOString(), isAuto,
+                markerCount: data.mCount, charucoIdsRows: data.chRows,
+                boardAreaRatio: data.areaRatio, diversityScore: data.divScore, feature: data.feature,
+                manual3DMappingSuccess, objectPointCount: objPts.rows, imagePointCount: imgPts.rows,
+                objPtsMat: objPts.clone(), imgPtsMat: imgPts.clone(), thumbDataUrl, note: data.rejectReason || "Pass"
+            };
+
+            summary.capturedFrames.push(frameRecord); lastCaptureTime = performance.now();
+            updateFramesUI();
+            log(`${isAuto?'自动':'手动'}采集: 帧#${frameRecord.frameIndex}, Pts:${objPts.rows}, Div:${data.divScore.toFixed(2)}`, 'log-success');
+            if (summary.capturedFrames.length >= 5) UI.btnCalibrate.disabled = false;
+
+        } catch(e) { log(`采集异常: ${e.message}`, 'log-error'); } 
+        finally { safeDelete(objPts); safeDelete(imgPts); }
+    }
+
+    UI.btnManualCap.addEventListener('click', () => { executeCapture(currentFrameData, false); });
+
+    UI.btnResetCap.addEventListener('click', () => {
+        if(!confirm("确定清空所有已采集的数据集吗？")) return;
+        for (let f of summary.capturedFrames) { safeDelete(f.objPtsMat); safeDelete(f.imgPtsMat); }
+        summary.capturedFrames = []; updateFramesUI();
+        UI.btnCalibrate.disabled = true; UI.btnDownloadJSON.disabled = true;
+        log("数据集已重置清空");
+    });
+
+    function updateFramesUI() {
+        UI.uiSampleCount.textContent = summary.capturedFrames.length;
+        UI.mCapCount.textContent = summary.capturedFrames.length;
+        UI.framesGrid.innerHTML = '';
+        summary.capturedFrames.forEach((f, i) => {
+            let div = document.createElement('div'); div.className = 'frame-card';
+            div.innerHTML = `<button class="del-btn" title="删除" onclick="deleteFrame(${i})">×</button>
+                <img src="${f.thumbDataUrl}">
+                <div class="info"><b>#${f.frameIndex}</b> [${f.isAuto?'A':'M'}]<br>Pts: <span class="val-good">${f.imagePointCount}</span><br>Div: ${f.diversityScore.toFixed(2)}<br>Area: ${f.boardAreaRatio.toFixed(2)}</div>`;
+            UI.framesGrid.appendChild(div);
+        });
+        UI.framesGrid.scrollTop = UI.framesGrid.scrollHeight;
+    }
+
+    window.deleteFrame = function(idx) {
+        if(idx < 0 || idx >= summary.capturedFrames.length) return;
+        let f = summary.capturedFrames[idx]; safeDelete(f.objPtsMat); safeDelete(f.imgPtsMat);
+        summary.capturedFrames.splice(idx, 1); updateFramesUI();
+        if (summary.capturedFrames.length < 5) UI.btnCalibrate.disabled = true;
+        log(`已移除帧 #${f.frameIndex}`);
+    }
+
+    // --- 9 & 10. 执行标定与导出 ---
+    UI.btnCalibrate.addEventListener('click', async () => {
+        const cv = cvInstance;
+        if (summary.capturedFrames.length < 3) { log("标定失败：至少需要 3 帧以上", "log-error"); return; }
+        
+        log('--- 执行真实相机标定 ---', 'log-info');
+        UI.btnCalibrate.disabled = true; UI.chkAuto.checked = false; 
+        summary.calibration.calibrationAttempted = true; summary.calibration.attempts = []; summary.calibration.errors = [];
+        setStatus(UI.calibStatus, '计算中...', 'status-loading'); UI.calibDataBox.textContent = '计算优化中，可能需要几秒钟...';
+        await new Promise(r => setTimeout(r, 50));
+        
+        let t0 = performance.now();
+        let objPtsMatVec = new cv.MatVector(); let imgPtsMatVec = new cv.MatVector();
+        let camMat = new cv.Mat(); let distCoeffs = new cv.Mat();
+        let rvecs = new cv.MatVector(); let tvecs = new cv.MatVector();
+        let stdInt = new cv.Mat(); let stdExt = new cv.Mat(); let perViewErrors = new cv.Mat();
+        
+        try {
+            summary.samplingConfig = getSamplingConfig(); let usableFrames = 0;
+            for (let v of summary.capturedFrames) {
+                if (v.manual3DMappingSuccess) { objPtsMatVec.push_back(v.objPtsMat); imgPtsMatVec.push_back(v.imgPtsMat); usableFrames++; }
+            }
+            summary.calibration.usableFrameCount = usableFrames;
+            
+            const w = summary.cameraConfig.width || processCanvas.width; const h = summary.cameraConfig.height || processCanvas.height;
+            summary.calibration.imageSize = { w, h }; const imgSize = new cv.Size(w, h);
+            
+            let flags = 0; let criteria = null; let rms = -1; let calibDone = false;
+            try { criteria = new cv.TermCriteria(cv.TermCriteria_EPS + cv.TermCriteria_MAX_ITER, 100, 1e-6); } catch(e){}
+
+            const callAttempts = [
+                { name: "cv.calibrateCameraExtended(..., criteria)", fn: () => cv.calibrateCameraExtended(objPtsMatVec, imgPtsMatVec, imgSize, camMat, distCoeffs, rvecs, tvecs, stdInt, stdExt, perViewErrors, flags, criteria) },
+                { name: "cv.calibrateCameraExtended(...) 无 criteria", fn: () => cv.calibrateCameraExtended(objPtsMatVec, imgPtsMatVec, imgSize, camMat, distCoeffs, rvecs, tvecs, stdInt, stdExt, perViewErrors, flags) },
+                { name: "cv.calibrateCamera(..., criteria)", fn: () => cv.calibrateCamera(objPtsMatVec, imgPtsMatVec, imgSize, camMat, distCoeffs, rvecs, tvecs, flags, criteria) },
+                { name: "cv.calibrateCamera(...)", fn: () => cv.calibrateCamera(objPtsMatVec, imgPtsMatVec, imgSize, camMat, distCoeffs, rvecs, tvecs, flags) }
+            ];
+
+            for (let attempt of callAttempts) {
+                try {
+                    rms = attempt.fn(); summary.calibration.attempts.push(`Success: ${attempt.name}`);
+                    log(`标定成功: ${attempt.name}, RMS=${rms.toFixed(4)}`, 'log-success');
+                    calibDone = true; break;
+                } catch(e) { summary.calibration.attempts.push(`Fail: ${attempt.name} - ${e.message}`); }
+            }
+
+            if (!calibDone) throw new Error("所有的标定解算 API 调用均失败");
+
+            summary.calibration.calibrationSuccess = true; summary.calibration.rms = rms;
+            summary.calibration.cameraMatrix = matToArray2D(camMat); summary.calibration.distCoeffs = matToArray2D(distCoeffs);
+            if(stdInt && stdInt.rows > 0) summary.calibration.stdDeviationsIntrinsics = matToArray2D(stdInt);
+            if(perViewErrors && perViewErrors.rows > 0) summary.calibration.perViewErrors = matToArray2D(perViewErrors);
+
+            setStatus(UI.calibStatus, '标定完成', 'status-success'); UI.btnDownloadJSON.disabled = false;
+            
+            let K = summary.calibration.cameraMatrix; let D = summary.calibration.distCoeffs[0];
+            let displayData = `[标定成功! 用时 ${Math.round(performance.now()-t0)}ms]\n分辨率: ${w} x ${h}\nRMS重投影误差: ${rms.toFixed(4)}\n\n[Camera Matrix K]\nfx: ${K[0][0].toFixed(2)}    cx: ${K[0][2].toFixed(2)}\nfy: ${K[1][1].toFixed(2)}    cy: ${K[1][2].toFixed(2)}\n\n[Distortion Coeffs]\nk1: ${D[0].toFixed(4)}  k2: ${D[1].toFixed(4)}\np1: ${D[2].toFixed(4)}  p2: ${D[3].toFixed(4)}\nk3: ${D[4].toFixed(4)}`;
+            UI.calibDataBox.textContent = displayData;
+
+        } catch(e) {
+            summary.calibration.errors.push(e.message); log(`标定致命错误: ${e.message}`, 'log-error'); setStatus(UI.calibStatus, '标定失败', 'status-error'); UI.calibDataBox.textContent = "标定失败: \n" + e.message;
+        } finally {
+            summary.calibration.elapsedMs = Math.round(performance.now() - t0);
+            safeDelete(objPtsMatVec); safeDelete(imgPtsMatVec); safeDelete(camMat); safeDelete(distCoeffs);
+            safeDelete(rvecs); safeDelete(tvecs); safeDelete(stdInt); safeDelete(stdExt); safeDelete(perViewErrors);
+            UI.btnCalibrate.disabled = false;
+        }
+    });
+
+    UI.btnDownloadJSON.addEventListener('click', () => {
+        summary.timestamp = new Date().toISOString();
+        summary.printConfig = {
+            squareLengthMm: parseFloat(UI.sqLenMm.value), markerLengthMm: parseFloat(UI.mkLenMm.value),
+            paperSize: UI.paperSize.value, orientation: UI.orientation.value, marginMm: parseFloat(UI.marginMm.value),
+            exportDpi: parseInt(UI.exportDpi.value, 10), showCalibrationRuler: UI.chkRuler.checked,
+            rulerLengthMm: parseFloat(UI.rulerLenMm.value), includeMetadataText: UI.chkMeta.checked
+        };
+        let exportData = JSON.parse(JSON.stringify(summary, (key, value) => { if (key === 'objPtsMat' || key === 'imgPtsMat' || key === 'feature') return undefined; return value; }));
+        const str = JSON.stringify(exportData, null, 2);
+        const blob = new Blob([str], { type: 'application/json' }); const url = URL.createObjectURL(blob);
+        const link = document.createElement('a'); let dateStr = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 15);
+        link.download = `charuco-calibration-${dateStr}.json`; link.href = url; link.click(); URL.revokeObjectURL(url);
+        log('结果 JSON 已触发下载', 'log-success');
+    });
+
+    UI.btnCopyJSON.addEventListener('click', () => {
+        summary.timestamp = new Date().toISOString();
+        summary.printConfig = {
+            squareLengthMm: parseFloat(UI.sqLenMm.value), markerLengthMm: parseFloat(UI.mkLenMm.value),
+            paperSize: UI.paperSize.value, orientation: UI.orientation.value, marginMm: parseFloat(UI.marginMm.value),
+            exportDpi: parseInt(UI.exportDpi.value, 10), showCalibrationRuler: UI.chkRuler.checked,
+            rulerLengthMm: parseFloat(UI.rulerLenMm.value), includeMetadataText: UI.chkMeta.checked
+        };
+        let exportData = JSON.parse(JSON.stringify(summary, (key, value) => { if (key === 'objPtsMat' || key === 'imgPtsMat' || key === 'thumbDataUrl' || key === 'feature') return undefined; return value; }));
+        const str = JSON.stringify(exportData, null, 2);
+        if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(str).then(()=>log('摘要已复制')).catch(e=>fallbackCopy(str)); } else { fallbackCopy(str); }
+    });
+    function fallbackCopy(str) { try { let t = document.createElement('textarea'); t.value = str; document.body.appendChild(t); t.select(); document.execCommand('copy'); document.body.removeChild(t); log('复制摘要成功'); } catch(e) { log('复制失败，请在控制台查看对象', 'log-error'); console.log(summary); } }
+    UI.btnClearLog.addEventListener('click', () => { UI.logArea.innerHTML = ''; });
+</script>
+</body>
+</html>
